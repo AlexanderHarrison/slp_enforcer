@@ -35,11 +35,14 @@ fn main() -> std::process::ExitCode {
     let violations = check_game(&game);
     
     for ply in 0..4 {
+        if game.frames[ply].is_none() { continue; }
         let found = violations.players[ply].found;
-        if found != 0 {
-            let mut name = String::new();
-            slp_parser::decode_shift_jis(&game.info.names[ply], &mut name);
-            println!("{} fails!", &name);
+        let mut name = String::new();
+        slp_parser::decode_shift_jis(&game.info.names[ply], &mut name);
+        if found == 0 {
+            println!("{} ({:?}) passes", name, violations.players[ply].lstick_type);
+        } else {
+            println!("{} ({:?}) fails!", name, violations.players[ply].lstick_type);
             for violation in iter_violations(found) {
                 println!("  {} violated", violation_name(violation));
             }
