@@ -4,72 +4,197 @@ use std::collections::HashSet;
 pub type ViolationMask = u64;
 pub mod violation {
     use super::ViolationMask;
-    pub const TRAVEL_TIME       : ViolationMask = 1 << 0;
-    pub const GOOMWAVE_CLAMPING : ViolationMask = 1 << 1;
+    pub const NO_TRAVEL_TIME        : ViolationMask = 1 << 0;
+    pub const NO_FUZZING            : ViolationMask = 1 << 1;
+    pub const ENLARGED_DEADZONES    : ViolationMask = 1 << 2;
+    pub const UTILT_ROUNDING        : ViolationMask = 1 << 3;
+    pub const ILLEGAL_LSTICK_COORDS : ViolationMask = 1 << 4;
+    pub const ILLEGAL_CSTICK_COORDS : ViolationMask = 1 << 5;
+}
+
+pub mod violation_group {
+    use super::violation::*;
+    use super::ViolationMask;
     
-    pub const ALL               : ViolationMask = TRAVEL_TIME | GOOMWAVE_CLAMPING;
+    pub const ALL: ViolationMask = NO_TRAVEL_TIME | NO_FUZZING 
+        | ENLARGED_DEADZONES | UTILT_ROUNDING;
+        
     pub const RAW_COORD_REQUIRED: ViolationMask = ALL;
+    pub const GOOMWAVE: ViolationMask = ENLARGED_DEADZONES | UTILT_ROUNDING;
+    
+    pub const LSTICK_CHECKS_DIGITAL : ViolationMask = NO_TRAVEL_TIME | NO_FUZZING | ILLEGAL_LSTICK_COORDS;
+    pub const LSTICK_CHECKS_ANALOG  : ViolationMask = ENLARGED_DEADZONES | UTILT_ROUNDING;
+    pub const LSTICK_CHECKS_ORCA    : ViolationMask = LSTICK_CHECKS_ANALOG;
+    
+    pub const CSTICK_CHECKS_DIGITAL : ViolationMask = ILLEGAL_CSTICK_COORDS;
+    pub const CSTICK_CHECKS_ANALOG  : ViolationMask = 0;
+    pub const CSTICK_CHECKS_ORCA    : ViolationMask = CSTICK_CHECKS_DIGITAL;
 }
 
 pub fn violation_name(mask: ViolationMask) -> &'static str {
     match mask {
-        violation::TRAVEL_TIME => "Travel time",
-        violation::GOOMWAVE_CLAMPING => "Goomwave clamping",
+        violation::NO_TRAVEL_TIME => "No travel time",
+        violation::NO_FUZZING => "No coordinate fuzzing",
+        violation::ENLARGED_DEADZONES => "Enlarged deadzones",
+        violation::UTILT_ROUNDING => "Up tilt rounding",
         _ => "Unknown",
     }
-} 
-
+}
+ 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum StickType {
     Analog,
     Digital,
     Orca,
+    Unknown,
 }
 
-/*#[derive(Copy, Clone, Debug, PartialEq)]
+impl StickType {
+    pub fn name(self) -> &'static str {
+        match self {
+            StickType::Analog => "Analog",
+            StickType::Digital => "Digital",
+            StickType::Orca => "Orca",
+            StickType::Unknown => "Unknown",
+        }
+    }
+
+    pub fn lstick_checks(self) -> ViolationMask {
+        match self {
+            StickType::Digital => violation_group::LSTICK_CHECKS_DIGITAL,
+            StickType::Analog | StickType::Orca => violation_group::LSTICK_CHECKS_ANALOG,
+            StickType::Unknown => 0,
+        }
+    }
+    
+    pub fn cstick_checks(self) -> ViolationMask {
+        match self {
+            StickType::Digital => violation_group::CSTICK_CHECKS_DIGITAL,
+            
+            // Note that the orca controller has a digial cstick, NOT an orca style cstick.
+            StickType::Analog | StickType::Orca => violation_group::CSTICK_CHECKS_ANALOG,
+            
+            StickType::Unknown => 0,
+        }
+    }
+}        
+
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Controller {
-    OEMOrPhob,
+    GCC,
     Goomwave,
     Box,
-    CubstrabtionOrCPad,
+    
+    /// This is a broad category, including:
+    /// - GCC with cpad
+    /// - Box with nunchuck
+    /// - Fightstick
+    /// - Cubstraption
+    AnalogLStickDigitalCStick,
+    
     Orca,
-}*/
+    Unknown,
+}
+
+impl Controller {
+    pub fn guess(
+        lstick: StickType,
+        cstick: StickType,
+        violations: ViolationMask,
+    ) -> Controller {
+        if violations & violation_group::GOOMWAVE != 0 {
+            return Controller::Goomwave;
+        }
+        
+        use StickType::*;
+        match (lstick, cstick) {
+            (Analog, Analog) => Controller::GCC,
+            (Digital, Digital) => Controller::Box,
+            (Analog, Digital) => Controller::AnalogLStickDigitalCStick,
+            (Orca, Digital) => Controller::Orca,
+            _ => Controller::Unknown,
+        }
+    }
+    
+    pub fn name(self) -> &'static str {
+        match self {
+            Controller::GCC                       => "GCC",
+            Controller::Goomwave                  => "Goomwave",
+            Controller::Box                       => "Box",
+            Controller::AnalogLStickDigitalCStick => "Cubstraption, Nunchuck B0XX, Fightstick, or CPad",
+            Controller::Orca                      => "Orca",
+            Controller::Unknown                   => "Unknown",
+        }
+    }
+    
+    pub fn lstick(self) -> StickType {
+        match self {
+            Controller::GCC                       => StickType::Analog,
+            Controller::Goomwave                  => StickType::Analog,
+            Controller::Box                       => StickType::Digital,
+            Controller::AnalogLStickDigitalCStick => StickType::Analog,
+            Controller::Orca                      => StickType::Orca,
+            Controller::Unknown                   => StickType::Unknown,
+        }
+    }
+    
+    pub fn cstick(self) -> StickType {
+        match self {
+            Controller::GCC                       => StickType::Analog,
+            Controller::Goomwave                  => StickType::Analog,
+            Controller::Box                       => StickType::Digital,
+            Controller::AnalogLStickDigitalCStick => StickType::Digital,
+            Controller::Orca                      => StickType::Digital,
+            Controller::Unknown                   => StickType::Unknown,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct PlayerViolations {
+    /// Bitmask of which violations were checked for this player.
+    /// 
+    /// This will always be equal or a subset of `ViolationResult.checked`.
+    /// The violations checked are based on the type of controller.
+    pub checked: ViolationMask,
+    
     /// Bitmask of which violations were detected for this player.
     pub found: ViolationMask,
     
     /// Whether the lstick is analog, digital, or orca.
     pub lstick_type: StickType,
     
-    /*
-        /// Whether the cstick is analog or digital.
-        pub cstick_type: StickType,
-        
-        /// Guessed controller.
-        pub controller: Controller,
-    */
+    /// Whether the cstick is analog or digital.
+    pub cstick_type: StickType,
+    
+    /// Guessed controller.
+    pub controller: Controller,
     
     /// The percentage of control stick movements that do not have intermediate values.
     ///
     /// Between 0 and 1.
     /// Values less than 0.25 will count as a violation. 
     pub travel_time_hit_rate: f32,
+    
+    pub fuzz_rate: f32,
 }
 
 impl PlayerViolations {
     pub const DEFAULT: PlayerViolations = PlayerViolations {
+        checked: 0,
         found: 0,
         lstick_type: StickType::Analog,
+        cstick_type: StickType::Analog,
+        controller: Controller::GCC,
         
         travel_time_hit_rate: 0.0,
+        fuzz_rate: 0.0,
     };
 }
 
 #[derive(Clone, Debug)]
 pub struct ViolationResult {
-    /// Bitmask of which violations were checked.
+    /// Bitmask of which violations were checked in this game.
     ///
     /// Some violations cannot be checked because the slp file is too old and
     /// does not contain the necessary information.
@@ -116,17 +241,19 @@ pub fn check_game(game: &Game) -> ViolationResult {
     let mut res = ViolationResult::DEFAULT;
     
     if game.info.min_version(3, 17, 0) {
-        res.checked |= violation::RAW_COORD_REQUIRED;
+        res.checked |= violation_group::RAW_COORD_REQUIRED;
     } else {
-        res.skipped |= violation::RAW_COORD_REQUIRED;
+        res.skipped |= violation_group::RAW_COORD_REQUIRED;
     }
     
     let mut stick_coords = Vec::new();
-    let mut rim_coords = HashSet::<(i8, i8)>::with_capacity(4096);
+    let mut coord_set = HashSet::<(i8, i8)>::with_capacity(4096);
     
     for ply in 0..4 {
         let Some(ref frames) = game.frames[ply] else { continue; };
         let vio = &mut res.players[ply];
+        
+        // LSTICK CHECKS ---------------------------------------
         
         // push clamped lstick coords to buffer
         stick_coords.clear();
@@ -135,32 +262,107 @@ pub fn check_game(game: &Game) -> ViolationResult {
             stick_coords.push(f.left_stick_coords_raw.clamped());
         }
         
-        // determine digital/analog lstick
-        vio.lstick_type = lstick_type(&mut rim_coords, &stick_coords);
-    
-        if vio.lstick_type == StickType::Digital {
-            // digital lstick checks -------------------
+        // determine digital/analog/orca lstick
+        vio.lstick_type = lstick_type(&mut coord_set, &stick_coords);
         
-            // travel time
-            if res.checked & violation::TRAVEL_TIME != 0 {
-                vio.travel_time_hit_rate = travel_time_hit_rate(&stick_coords);
-                if vio.travel_time_hit_rate < 0.25 {
-                    vio.found |= violation::TRAVEL_TIME;
-                }
-            }
-        } else {
-            // analog and orca lstick checks --------------------
-            
-            // goomwave clamping
-            if res.checked & violation::GOOMWAVE_CLAMPING != 0 {
-                if has_goomwave_clamping(&stick_coords) {
-                    vio.found |= violation::GOOMWAVE_CLAMPING;
-                }
+        // determine checks for this player
+        vio.checked |= res.checked & vio.lstick_type.lstick_checks();
+        
+        // travel time
+        if vio.checked & violation::NO_TRAVEL_TIME != 0 {
+            vio.travel_time_hit_rate = travel_time_hit_rate(&stick_coords);
+            if vio.travel_time_hit_rate < 0.25 {
+                vio.found |= violation::NO_TRAVEL_TIME;
             }
         }
+            
+        // coordinate fuzzing
+        if vio.checked & violation::NO_FUZZING != 0 {
+            vio.fuzz_rate = fuzz_rate(&stick_coords);
+            
+            // at least 50% of same-target inputs must be 1 off from target (25% to each side)
+            if vio.fuzz_rate < 0.3 {
+                vio.found |= violation::NO_FUZZING;
+            }
+        }
+            
+        // goomwave clamping
+        if vio.checked & violation::ENLARGED_DEADZONES != 0 {
+            if has_enlarged_deadzones(&stick_coords) {
+                vio.found |= violation::ENLARGED_DEADZONES;
+            }
+        }
+        
+        // goomwave utilt rounding
+        if vio.checked & violation::UTILT_ROUNDING != 0 {
+            if has_utilt_rounding(&stick_coords) {
+                vio.found |= violation::UTILT_ROUNDING;
+            }
+        }
+        
+        // banned lstick values
+        if vio.checked & violation::ILLEGAL_LSTICK_COORDS != 0 {
+            // TODO
+        }
+        
+        // CSTICK CHECKS ---------------------------------------
+        
+        // push clamped cstick coords to buffer
+        stick_coords.clear();
+        for f in frames {
+            stick_coords.push(f.right_stick_coords_raw.clamped());
+        }
+        
+        // determine digital/analog/orca lstick
+        vio.cstick_type = cstick_type(&mut coord_set, &stick_coords);
+        
+        // determine checks for this player
+        vio.checked |= res.checked & vio.cstick_type.cstick_checks();
+        
+        // banned cstick values
+        if vio.checked & violation::ILLEGAL_CSTICK_COORDS != 0 {
+            // TODO
+        }
+        
+        // GUESS CONTROLLER -------------------------------
+        
+        vio.controller = Controller::guess(
+            vio.lstick_type, vio.cstick_type,
+            vio.found,
+        );
     }
     
     res
+}
+
+/// Only determines between analog and digital for now.
+pub fn cstick_type(
+    coord_set: &mut HashSet<(i8, i8)>,
+    coords: &[VectorI8]
+) -> StickType {
+    coord_set.clear();
+    
+    for coord in coords {
+        coord_set.insert((coord.x, coord.y));
+    }
+    
+    // some sickos don't use it
+    if coord_set.len() <= 1 { return StickType::Unknown; }
+    
+    let mut noncardinal = 0;
+    let mut cardinal = 0;
+    
+    for (x, y) in coord_set.iter().copied() {
+        if x == 0 || y == 0 { cardinal += 1; }
+        else { noncardinal += 1; }
+    }
+    
+    // oems have wayyyyy more noncardinal inputs than cardinal inputs
+    if noncardinal > cardinal * 2 {
+        StickType::Analog
+    } else {
+        StickType::Digital
+    }
 }
 
 pub fn lstick_type(
@@ -220,8 +422,6 @@ pub fn lstick_type(
         rim_coverage_required /= (THREE_MINUTES - coords.len()) as f32 / THREE_MINUTES as f32 + 1.0;
     }
     
-    dbg!(noncardinal_rate, rim_coverage, rim_coverage_required);
-    
     if noncardinal_rate > 0.50 {
         StickType::Analog
     } else if rim_coverage > rim_coverage_required {
@@ -262,7 +462,7 @@ fn travel_time_hit_rate(coords: &[VectorI8]) -> f32 {
     travel_coord_count as f32 / (target_count - 1) as f32
 }
 
-fn has_goomwave_clamping(coords: &[VectorI8]) -> bool {
+fn has_enlarged_deadzones(coords: &[VectorI8]) -> bool {
     // stick values [-6, 6] are set to zero on goomwaves
     
     for coord in coords {
@@ -270,6 +470,51 @@ fn has_goomwave_clamping(coords: &[VectorI8]) -> bool {
         if coord.y != 0 && -7 < coord.y && coord.y < 7 { return false; }
     }
     true
+}
+
+fn fuzz_rate(coords: &[VectorI8]) -> f32 {
+    let mut fuzzed_count = 0;
+    let mut unfuzzed_count = 0;
+    
+    for group in coords.windows(2) {
+        let [a, b] = group else { panic!(); };
+        
+        if a.x != 0 {
+            match a.x.abs_diff(b.x) {
+                0 => unfuzzed_count += 1,
+                1|2 => fuzzed_count += 1,
+                _ => ()
+            }
+        }
+        
+        if a.y != 0 {
+            match a.y.abs_diff(b.y) {
+                0 => unfuzzed_count += 1,
+                1|2 => fuzzed_count += 1,
+                _ => ()
+            }
+        }
+    }
+    
+    if unfuzzed_count == 0 { return 1.0; }
+    fuzzed_count as f32 / unfuzzed_count as f32
+}
+
+fn has_utilt_rounding(coords: &[VectorI8]) -> bool {
+    let mut utilt_zone_count = 0;
+    let mut utilt_boundary_count = 0;
+    
+    for coord in coords {
+        if -22 <= coord.x && coord.x <= 22 {
+            if 13 <= coord.y && coord.y <= 22 { return false; }
+            
+            if coord.y == 23 { utilt_boundary_count += 1; }
+            if 23 <= coord.y && coord.y <= 52 { utilt_zone_count += 1; }
+        }
+    }
+    
+    let utilt_boundary_rate = utilt_boundary_count as f32 / utilt_zone_count as f32; 
+    utilt_boundary_count > 5 && utilt_boundary_rate > 0.08
 }
 
 #[test]
@@ -281,7 +526,7 @@ fn test() {
     let (game, _) = slp_parser::read_game(std::path::Path::new("test_slps/p1_no_nerf_box.slpz")).unwrap();
     let res = check_game(&game);
     
-    assert_eq!(res.checked, violation::ALL);
+    assert_eq!(res.checked, violation_groups::ALL);
     assert_eq!(res.skipped, 0);
     assert_eq!(res.players[0].found, violation::TRAVEL_TIME);
     assert_eq!(res.players[0].lstick_type, StickType::Digital);

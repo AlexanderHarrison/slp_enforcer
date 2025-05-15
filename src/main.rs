@@ -33,18 +33,29 @@ fn main() -> std::process::ExitCode {
     };
     
     let violations = check_game(&game);
-    
-    for ply in 0..4 {
-        if game.frames[ply].is_none() { continue; }
-        let found = violations.players[ply].found;
-        let mut name = String::new();
-        slp_parser::decode_shift_jis(&game.info.names[ply], &mut name);
-        if found == 0 {
-            println!("{} ({:?}) passes", name, violations.players[ply].lstick_type);
-        } else {
-            println!("{} ({:?}) fails!", name, violations.players[ply].lstick_type);
-            for violation in iter_violations(found) {
-                println!("  {} violated", violation_name(violation));
+    if violations.checked == 0 {
+        println!(
+            "no checks performed: version {}.{}.{} is too old.",
+            game.info.version_major,
+            game.info.version_minor,
+            game.info.version_patch,
+        );
+    } else {
+        for ply in 0..4 {
+            if game.frames[ply].is_none() { continue; }
+            let checked = violations.players[ply].checked;
+            let found = violations.players[ply].found;
+            let mut name = String::new();
+            slp_parser::decode_shift_jis(&game.info.names[ply], &mut name);
+            if checked == 0 {
+                println!("{} ({:?}) no checks performed", name, violations.players[ply].lstick_type);
+            } else if found == 0 {
+                println!("{} ({:?}) passes", name, violations.players[ply].lstick_type);
+            } else {
+                println!("{} ({:?}) fails!", name, violations.players[ply].lstick_type);
+                for violation in iter_violations(found) {
+                    println!("  {}", violation_name(violation));
+                }
             }
         }
     }
