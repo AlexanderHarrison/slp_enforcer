@@ -1,6 +1,9 @@
 use slp_parser::{Game, VectorI8};
 use std::collections::HashSet;
 
+const RIM_MIN: f32 = 79.0*79.0;
+const RIM_MIN_I: isize = 79*79;
+
 pub type ViolationMask = u64;
 pub mod violation {
     use super::ViolationMask;
@@ -17,7 +20,8 @@ pub mod violation_group {
     use super::ViolationMask;
     
     pub const ALL: ViolationMask = NO_TRAVEL_TIME | NO_FUZZING 
-        | ENLARGED_DEADZONES | UTILT_ROUNDING;
+        | ENLARGED_DEADZONES | UTILT_ROUNDING
+        | ILLEGAL_LSTICK_COORDS | ILLEGAL_CSTICK_COORDS;
         
     pub const RAW_COORD_REQUIRED: ViolationMask = ALL;
     pub const GOOMWAVE: ViolationMask = ENLARGED_DEADZONES | UTILT_ROUNDING;
@@ -29,9 +33,11 @@ pub mod violation_group {
     pub const CSTICK_CHECKS_DIGITAL : ViolationMask = ILLEGAL_CSTICK_COORDS;
     pub const CSTICK_CHECKS_ANALOG  : ViolationMask = 0;
     pub const CSTICK_CHECKS_ORCA    : ViolationMask = CSTICK_CHECKS_DIGITAL;
+    
+    //pub const BOX_CHECKS: ViolationMask = ;
 }
 
-pub fn violation_name(mask: ViolationMask) -> &'static str {
+pub const fn violation_name(mask: ViolationMask) -> &'static str {
     match mask {
         violation::NO_TRAVEL_TIME => "No travel time",
         violation::NO_FUZZING => "No coordinate fuzzing",
@@ -50,7 +56,7 @@ pub enum StickType {
 }
 
 impl StickType {
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             StickType::Analog => "Analog",
             StickType::Digital => "Digital",
@@ -59,7 +65,7 @@ impl StickType {
         }
     }
 
-    pub fn lstick_checks(self) -> ViolationMask {
+    pub const fn lstick_checks(self) -> ViolationMask {
         match self {
             StickType::Digital => violation_group::LSTICK_CHECKS_DIGITAL,
             StickType::Analog | StickType::Orca => violation_group::LSTICK_CHECKS_ANALOG,
@@ -67,7 +73,7 @@ impl StickType {
         }
     }
     
-    pub fn cstick_checks(self) -> ViolationMask {
+    pub const fn cstick_checks(self) -> ViolationMask {
         match self {
             StickType::Digital => violation_group::CSTICK_CHECKS_DIGITAL,
             
@@ -77,7 +83,19 @@ impl StickType {
             StickType::Unknown => 0,
         }
     }
-}        
+}
+
+impl std::fmt::Display for StickType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl std::fmt::Display for Controller {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Controller {
@@ -97,7 +115,7 @@ pub enum Controller {
 }
 
 impl Controller {
-    pub fn guess(
+    pub const fn guess(
         lstick: StickType,
         cstick: StickType,
         violations: ViolationMask,
@@ -116,7 +134,12 @@ impl Controller {
         }
     }
     
-    pub fn name(self) -> &'static str {
+    pub const fn checks(self) -> ViolationMask {
+        self.lstick().lstick_checks()
+            | self.cstick().cstick_checks()
+    }
+    
+    pub const fn name(self) -> &'static str {
         match self {
             Controller::GCC                       => "GCC",
             Controller::Goomwave                  => "Goomwave",
@@ -127,7 +150,7 @@ impl Controller {
         }
     }
     
-    pub fn lstick(self) -> StickType {
+    pub const fn lstick(self) -> StickType {
         match self {
             Controller::GCC                       => StickType::Analog,
             Controller::Goomwave                  => StickType::Analog,
@@ -138,7 +161,7 @@ impl Controller {
         }
     }
     
-    pub fn cstick(self) -> StickType {
+    pub const fn cstick(self) -> StickType {
         match self {
             Controller::GCC                       => StickType::Analog,
             Controller::Goomwave                  => StickType::Analog,
@@ -349,6 +372,25 @@ pub fn cstick_type(
     // some sickos don't use it
     if coord_set.len() <= 1 { return StickType::Unknown; }
     
+    if coord_set.len() < 10 {
+        for (x, y) in coord_set.iter().copied() {
+            let mut x = x as isize;
+            let mut y = y as isize;
+            
+            // idk why but some box's csticks output weird, low numbers occasionally
+            if x.abs() < 10 { x = 0; } 
+            if y.abs() < 10 { y = 0; } 
+            
+            let dist_sq = x*x + y*y;
+            if dist_sq != 0 && dist_sq < RIM_MIN_I {
+                return StickType::Unknown;
+            }
+        }
+        
+        // digital if player only used cardinals with no travel time nerf
+        return StickType::Digital;
+    }
+    
     let mut noncardinal = 0;
     let mut cardinal = 0;
     
@@ -358,7 +400,7 @@ pub fn cstick_type(
     }
     
     // oems have wayyyyy more noncardinal inputs than cardinal inputs
-    if noncardinal > cardinal * 2 {
+    if noncardinal > cardinal {
         StickType::Analog
     } else {
         StickType::Digital
@@ -376,7 +418,6 @@ pub fn lstick_type(
     let mut rim_set = std::collections::HashSet::new();
     
     // square magnitude of rim. 80 is max ssbm coord distance.
-    const RIM_MIN: f32 = 79.0*79.0;
     const RIM_COUNT: f32 = 432.0;
     
     for group in coords.windows(2) {
@@ -517,19 +558,142 @@ fn has_utilt_rounding(coords: &[VectorI8]) -> bool {
     utilt_boundary_count > 5 && utilt_boundary_rate > 0.08
 }
 
-#[test]
-fn test() {
-    // p1_no_nerf_box ---------------------------------------
-    // p1: box with travel time violation
-    // p2: gcc with no violations
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[track_caller]
+    fn res(s: &str) -> ViolationResult {
+        let (game, _) = slp_parser::read_game(std::path::Path::new(
+            &format!("test_slps/{}", s)
+        )).unwrap();
+        let res = check_game(&game);
+        assert_eq!(res.checked, violation_group::ALL);
+        assert_eq!(res.skipped, 0);
+        
+        res
+    }
+
+    #[track_caller]
+    fn box_no_nerf(pl: &PlayerViolations) {
+        assert_eq!(pl.checked, Controller::Box.checks());
+        assert_eq!(pl.found, violation::NO_TRAVEL_TIME | violation::NO_FUZZING);
+        assert_eq!(pl.lstick_type, StickType::Digital);
+        assert_eq!(pl.cstick_type, StickType::Digital);
+        assert_eq!(pl.controller, Controller::Box);
+    }
     
-    let (game, _) = slp_parser::read_game(std::path::Path::new("test_slps/p1_no_nerf_box.slpz")).unwrap();
-    let res = check_game(&game);
+    #[track_caller]
+    fn box_tt_nerf(pl: &PlayerViolations) {
+        assert_eq!(pl.checked, Controller::Box.checks());
+        assert_eq!(pl.found, violation::NO_FUZZING);
+        assert_eq!(pl.lstick_type, StickType::Digital);
+        assert_eq!(pl.cstick_type, StickType::Digital);
+        assert_eq!(pl.controller, Controller::Box);
+    }
     
-    assert_eq!(res.checked, violation_groups::ALL);
-    assert_eq!(res.skipped, 0);
-    assert_eq!(res.players[0].found, violation::TRAVEL_TIME);
-    assert_eq!(res.players[0].lstick_type, StickType::Digital);
-    assert_eq!(res.players[1].found, 0);
-    assert_eq!(res.players[1].lstick_type, StickType::Analog);
+    #[track_caller]
+    fn gcc(pl: &PlayerViolations) {
+        assert_eq!(pl.checked, Controller::GCC.checks());
+        assert_eq!(pl.found, 0);
+        assert_eq!(pl.lstick_type, StickType::Analog);
+        assert_eq!(pl.cstick_type, StickType::Analog);
+        assert_eq!(pl.controller, Controller::GCC);
+    }
+    
+    #[track_caller]
+    fn goomwave(pl: &PlayerViolations) {
+        assert_eq!(pl.checked, Controller::Goomwave.checks());
+        assert_eq!(pl.found, violation::ENLARGED_DEADZONES); // can't find utilt rounding test case
+        assert_eq!(pl.lstick_type, StickType::Analog);
+        assert_eq!(pl.cstick_type, StickType::Analog);
+        assert_eq!(pl.controller, Controller::Goomwave);
+    }
+    
+    #[track_caller]
+    fn orca(pl: &PlayerViolations) {
+        assert_eq!(pl.checked, Controller::Orca.checks());
+        assert_eq!(pl.found, 0);
+        assert_eq!(pl.lstick_type, StickType::Orca);
+        assert_eq!(pl.cstick_type, StickType::Digital);
+        assert_eq!(pl.controller, Controller::Orca);
+    }
+    
+    #[test] fn goomwave_1() {
+        let res = res("goomwave.slpz");
+        gcc(&res.players[0]);
+        goomwave(&res.players[1]);
+    }
+    
+    #[test] fn goomwave_2() {
+        let res = res("goomwave2.slpz");
+        gcc(&res.players[0]);
+        goomwave(&res.players[1]);
+    }
+    
+    #[test] fn box_nonerf_1() {
+        let res = res("p1_box_nonerf.slpz");
+        box_no_nerf(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn box_nonerf_2() {
+        let res = res("p1_box_nonerf2.slpz");
+        box_no_nerf(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn box_nonerf_3() {
+        let res = res("p1_box_nonerf3.slpz");
+        box_no_nerf(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn box_nonerf_4() {
+        let res = res("p1_box_nonerf4.slpz");
+        box_no_nerf(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn box_tt_nerf_1() {
+        let res = res("p1_box_nerf.slpz");
+        box_tt_nerf(&res.players[0]);
+        box_tt_nerf(&res.players[1]);
+    }
+    
+    #[test] fn orca_1() {
+        let res = res("p1_orca.slpz");
+        orca(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn orca_2() {
+        let res = res("p1_orca2.slpz");
+        orca(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn orca_3() {
+        let res = res("p1_orca3.slpz");
+        orca(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn orca_4() {
+        let res = res("p1_orca4.slpz");
+        orca(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn orca_5() {
+        let res = res("p1_orca5.slpz");
+        orca(&res.players[0]);
+        gcc(&res.players[1]);
+    }
+    
+    #[test] fn oem_1() {
+        let res = res("p1_oem.slpz");
+        gcc(&res.players[0]);
+        gcc(&res.players[1]);
+    }
 }
